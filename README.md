@@ -26,7 +26,7 @@ Below, there is an example of config doing some things:
     "DoNotChangeDownloadClient": false,
     "UseStash": true,
     "DownloadCLientUrl": "http://192.168.1.2:8080",
-    "IgnoreByCaterogy": "",
+    "IgnoreByCategory": "",
     "IgnoreByName": "My_Special_Download",
     "IgnoreByTag": "",
     "PoolSize": 100,

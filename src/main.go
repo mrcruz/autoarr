@@ -69,11 +69,7 @@ func main() {
 
 		newDownloadSize := download.totalSize
 
-		if CheckBlocklist(download.name, m_config.IgnoreByName) ||
-			CheckBlocklist(download.tags, m_config.IgnoreByTag) ||
-			CheckBlocklist(download.category, m_config.IgnoreByCaterogy) ||
-			(m_config.AllowByCategory != "" && !strings.Contains(download.category, m_config.AllowByCategory)) {
-
+		if download.IsIgnored() {
 			if m_config.ConsiderIgnoredInPoolSize {
 				activeDownloadSize += newDownloadSize
 			}
@@ -84,6 +80,10 @@ func main() {
 		// check if the download is a canditate for removal
 		removeDownload := false
 		for _, condition := range m_config.RemoveConditions {
+
+			if condition.Value == 0 {
+				panic("Value not defined for remove condition with field: " + condition.Field)
+			}
 
 			satisfiesCondition := false
 
@@ -158,11 +158,33 @@ func main() {
 	}
 }
 
-func CheckBlocklist(value string, blockItem string) bool {
-	if blockItem == "" {
-		return false
+func (download Download) IsIgnored() bool {
+	values := []string{download.name, download.tags, download.category}
+	blockItems := []string{m_config.IgnoreByName, m_config.IgnoreByTag, m_config.IgnoreByCategory}
+	allowItems := []string{m_config.AllowByName, m_config.AllowByTag, m_config.AllowByCategory}
+
+	for i, _ := range blockItems {
+		if blockItems[i] == "" {
+			continue
+		}
+
+		if strings.Contains(values[i], blockItems[i]) {
+			return true
+		}
+
 	}
-	return strings.Contains(value, blockItem)
+
+	for i, _ := range allowItems {
+		if allowItems[i] == "" {
+			continue
+		}
+
+		if !strings.Contains(values[i], allowItems[i]) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (download Download) GetRelativePath() string {
@@ -213,10 +235,18 @@ func (download Download) Retrieve() {
 }
 
 func (download Download) Stash() {
-	Rclone("move", download.GetActivePath(), download.GetIdlePath())
+	action := "move"
+	if m_config.DoNotDestroyFiles {
+		action = "copy"
+	}
+	Rclone(action, download.GetActivePath(), download.GetIdlePath())
 }
 
 func (download Download) Remove() {
+	if m_config.DoNotDestroyFiles == false {
+		fmt.Println("Not removing download " + download.name + " because DoNotDestroyFiles is true")
+		return
+	}
 	Rclone("purge", download.GetIdlePath())
 	Rclone("purge", download.GetActivePath())
 	MakeDownloadClientRequest("delete?hashes=" + download.hash + "&deleteFiles=true")
@@ -296,17 +326,14 @@ func GetDownloadList() []Download {
 		}
 
 		newDowload := Download{
-			raw:           downloadMap,
-			active:        active,
-			category:      downloadMap["category"].(string),
-			contentPath:   downloadMap["content_path"].(string),
-			hash:          downloadMap["hash"].(string),
-			name:          downloadMap["name"].(string),
-			numComplete:   downloadMap["num_complete"].(float64),
-			numIncomplete: downloadMap["num_incomplete"].(float64),
-			savePath:      downloadMap["save_path"].(string),
-			tags:          downloadMap["tags"].(string),
-			totalSize:     downloadMap["total_size"].(float64),
+			raw:         downloadMap,
+			active:      active,
+			category:    downloadMap["category"].(string),
+			contentPath: downloadMap["content_path"].(string),
+			hash:        downloadMap["hash"].(string),
+			name:        downloadMap["name"].(string),
+			tags:        downloadMap["tags"].(string),
+			totalSize:   downloadMap["total_size"].(float64),
 		}
 		downloads = append(downloads, newDowload)
 	}
@@ -315,26 +342,26 @@ func GetDownloadList() []Download {
 }
 
 type Download struct {
-	raw           map[string]interface{}
-	active        bool
-	category      string
-	contentPath   string
-	hash          string
-	name          string
-	numComplete   float64
-	numIncomplete float64
-	savePath      string
-	tags          string
-	totalSize     float64
+	raw         map[string]interface{}
+	active      bool
+	category    string
+	contentPath string
+	hash        string
+	name        string
+	tags        string
+	totalSize   float64
 }
 
 type Config struct {
 	AllowByCategory           string
+	AllowByName               string
+	AllowByTag                string
 	ConsiderIgnoredInPoolSize bool
 	DoNotChangeDownloadClient bool
 	DoNotChangeFiles          bool
+	DoNotDestroyFiles         bool
 	DownloadClientUrl         string
-	IgnoreByCaterogy          string
+	IgnoreByCategory          string
 	IgnoreByName              string
 	IgnoreByTag               string
 	PoolSize                  float64
