@@ -13,3 +13,10 @@
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
+
+# dev working files
+rclone.conf
+.vscode
+input.json
+docker-compose.yml
+autoarr.log
