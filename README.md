@@ -9,7 +9,6 @@ A stateless script that is intended to run every day and selects what your are g
 It's goal is to keep a maximum "Pool Size" (In GB) of active torrents, pausing less prioritize downloads and possibly deleting them, if desired.
 It can also move *idle downloads* to a remote location in order to save space on the seedbox and retrive then once needed.
 
-
 ## Usage
 
 Below, there is an example of config doing some things:
@@ -85,7 +84,11 @@ It uses [rclone](https://github.com/rclone/rclone) to move files so you can have
 
 ### Future
 
-* More complex priority options
-* Support other torrent clients
-* Auto manage idle pool
-* Support more use cases
+- [x] Retrieve downloads from idle storage
+- [x] Remove downloads if they meet specific properties
+- [x] Move downloads to idle pool
+- [ ] Remove downloads once they fill up the active pool
+- [ ] More complex priority options
+- [ ] Support other torrent clients
+- [ ] Auto manage idle pool
+- [ ] Support more use cases

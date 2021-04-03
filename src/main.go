@@ -13,10 +13,10 @@ import (
 	"time"
 )
 
-var m_downloadClientUrl string
-var m_downloadClientAPIUrl string
-var m_rootDownloadPath string
-var m_config Config
+var downloadClientUrlTorrent string
+var downloadClientUrl string
+var rootDownloadPath string
+var config Config
 
 func main() {
 	jsonFile, err := os.Open("/config/input.json")
@@ -27,129 +27,95 @@ func main() {
 
 	byteValue, _ := ioutil.ReadAll(jsonFile)
 
-	json.Unmarshal([]byte(byteValue), &m_config)
+	json.Unmarshal([]byte(byteValue), &config)
 
 	// get variables
-	poolSize := m_config.PoolSize * 1000000 * 1000
+	maxPoolSize := config.PoolSize * 1000000 * 1000
 
-	m_downloadClientAPIUrl = m_config.DownloadClientUrl + "/api/v2/"
-	m_downloadClientUrl = m_downloadClientAPIUrl + "torrents/"
+	downloadClientUrl = config.DownloadClientUrl + "/api/v2/"
+	downloadClientUrlTorrent = downloadClientUrl + "torrents/"
 
 	// sanity check on env variables
-	if m_config.RcloneRemote != "" {
+	if config.RcloneRemote != "" {
 		rcloneConfigPath := "/home/user/.config/rclone/rclone.conf"
 		if _, err := os.Stat(rcloneConfigPath); os.IsNotExist(err) {
 			panic("no rclone config found on " + rcloneConfigPath)
 		}
 	}
 
-	if poolSize <= 0 {
+	if maxPoolSize <= 0 {
 		panic("Pool Size not defined")
 	}
 
 	// get data from download client
-	m_rootDownloadPath = GetRootDownloadPath()
+	rootDownloadPath = GetRootDownloadPath()
 	allDownloads := GetDownloadList()
 
 	// sort them by priority
-	sort.SliceStable(allDownloads, func(i, j int) bool {
-		if m_config.SortInvertOrder {
-			return allDownloads[i].GetFloat(m_config.SortField) > allDownloads[j].GetFloat(m_config.SortField)
-		} else {
-			return allDownloads[i].GetFloat(m_config.SortField) < allDownloads[j].GetFloat(m_config.SortField)
-		}
-	})
+	sort.Stable(allDownloads)
 
 	// get list of soon to be active and soon to be idle downloads, respecting pool size
-	var downloadsToEnable []Download
-	var downloadsToDisable []Download
+	var activePool DownloadCollection
+	var idlePool DownloadCollection
 
-	var activeDownloadSize float64
-	for _, download := range allDownloads {
+	var activeDownloadPoolSize float64
+	for _, download := range allDownloads.Downloads {
 
-		newDownloadSize := download.totalSize
+		newDownloadSize := download.Size
 
 		if download.IsIgnored() {
-			if m_config.ConsiderIgnoredInPoolSize {
-				activeDownloadSize += newDownloadSize
+			if config.ConsiderIgnoredInPoolSize {
+				activeDownloadPoolSize += newDownloadSize
 			}
 
-			continue
-		}
-
-		// check if the download is a canditate for removal
-		removeDownload := false
-		for _, condition := range m_config.RemoveConditions {
-
-			if condition.Value == 0 {
-				panic("Value not defined for remove condition with field: " + condition.Field)
-			}
-
-			satisfiesCondition := false
-
-			if condition.Invert {
-				satisfiesCondition = download.GetFloat(condition.Field) < condition.Value
-			} else {
-				satisfiesCondition = download.GetFloat(condition.Field) > condition.Value
-			}
-
-			if satisfiesCondition {
-				removeDownload = true
-				if m_config.RemoveConditionInclusive == true {
-					break
-				}
-			} else {
-				removeDownload = false
-				if m_config.RemoveConditionInclusive == false {
-					break
-				}
-			}
-		}
-
-		if removeDownload {
-			Log("Removing download: " + download.name)
-			download.Remove()
 			continue
 		}
 
 		// enable torrent if fits on active pool, disable if it does not
-		if activeDownloadSize+newDownloadSize < poolSize {
-			downloadsToEnable = append(downloadsToEnable, download)
-			activeDownloadSize += newDownloadSize
+		if activeDownloadPoolSize+newDownloadSize < maxPoolSize {
+			activePool.Add(download)
+			activeDownloadPoolSize += newDownloadSize
 		} else {
-			downloadsToDisable = append(downloadsToDisable, download)
+			idlePool.Add(download)
 		}
 	}
 
-	for _, download := range downloadsToDisable {
-
-		// do nothing if download is already inactive
-		if download.active == false {
+	for _, download := range idlePool.Downloads {
+		if download.ShouldBeRemoved() {
+			download.Remove()
 			continue
 		}
 
-		Log("Stoping download: " + download.name)
+		if download.Active == false {
+			continue
+		}
+
+		Log("Stoping download: " + download.Name)
 
 		download.Pause()
 
-		if m_config.UseStash {
+		if config.UseStash {
 			download.Stash()
 		}
 	}
 
-	for _, download := range downloadsToEnable {
-
-		if download.active == true {
+	for _, download := range activePool.Downloads {
+		if config.RemoveOnlyWhenPoolIsFull == false && download.ShouldBeRemoved() {
+			download.Remove()
 			continue
 		}
 
-		Log("Starting download: " + download.name)
+		if download.Active == true {
+			continue
+		}
 
-		if m_config.UseStash {
+		Log("Starting download: " + download.Name)
+
+		if config.UseStash {
 			download.Retrieve()
 		}
 
-		if m_config.RecheckOnResume {
+		if config.RecheckOnResume {
 			download.Recheck()
 		}
 
@@ -158,10 +124,41 @@ func main() {
 	}
 }
 
+func (download Download) ShouldBeRemoved() bool {
+	removeDownload := false
+	for _, condition := range config.RemoveConditions {
+
+		if condition.Value == 0 {
+			panic("Value not defined for remove condition with field: " + condition.Field)
+		}
+
+		satisfiesCondition := false
+
+		if condition.Invert {
+			satisfiesCondition = download.GetFloat(condition.Field) < condition.Value
+		} else {
+			satisfiesCondition = download.GetFloat(condition.Field) > condition.Value
+		}
+
+		if satisfiesCondition {
+			removeDownload = true
+			if config.RemoveConditionInclusive == true {
+				break
+			}
+		} else {
+			removeDownload = false
+			if config.RemoveConditionInclusive == false {
+				break
+			}
+		}
+	}
+	return removeDownload
+}
+
 func (download Download) IsIgnored() bool {
-	values := []string{download.name, download.tags, download.category}
-	blockItems := []string{m_config.IgnoreByName, m_config.IgnoreByTag, m_config.IgnoreByCategory}
-	allowItems := []string{m_config.AllowByName, m_config.AllowByTag, m_config.AllowByCategory}
+	values := []string{download.Name, download.Tag, download.Category}
+	blockItems := []string{config.IgnoreByName, config.IgnoreByTag, config.IgnoreByCategory}
+	allowItems := []string{config.AllowByName, config.AllowByTag, config.AllowByCategory}
 
 	for i, _ := range blockItems {
 		if blockItems[i] == "" {
@@ -188,13 +185,13 @@ func (download Download) IsIgnored() bool {
 }
 
 func (download Download) GetRelativePath() string {
-	return strings.TrimLeft(strings.ReplaceAll(download.contentPath, m_rootDownloadPath, ""), "/")
+	return strings.TrimLeft(strings.ReplaceAll(download.ContentPath, rootDownloadPath, ""), "/")
 }
 
 func (download Download) GetIdlePath() string {
 	idlePath := "/idle/"
-	if m_config.RcloneRemote != "" {
-		idlePath = m_config.RcloneRemote + ":/"
+	if config.RcloneRemote != "" {
+		idlePath = config.RcloneRemote + ":/"
 	}
 	return idlePath + download.GetRelativePath()
 }
@@ -224,7 +221,7 @@ func Log(line string) {
 func Rclone(command ...string) {
 	cmd := exec.Command("rclone", command...)
 	fmt.Println(cmd)
-	if m_config.DoNotChangeFiles {
+	if config.DoNotChangeFiles {
 		return
 	}
 	cmd.Output()
@@ -236,55 +233,83 @@ func (download Download) Retrieve() {
 
 func (download Download) Stash() {
 	action := "move"
-	if m_config.DoNotDestroyFiles {
+	if config.DoNotDestroyFiles {
 		action = "copy"
 	}
 	Rclone(action, download.GetActivePath(), download.GetIdlePath())
 }
 
 func (download Download) Remove() {
-	if m_config.DoNotDestroyFiles == false {
-		fmt.Println("Not removing download " + download.name + " because DoNotDestroyFiles is true")
+	Log("Removing download: " + download.Name)
+
+	if config.DoNotDestroyFiles {
+		fmt.Println("Not removing download " + download.Name + " because DoNotDestroyFiles is true")
 		return
 	}
 	Rclone("purge", download.GetIdlePath())
 	Rclone("purge", download.GetActivePath())
-	MakeDownloadClientRequest("delete?hashes=" + download.hash + "&deleteFiles=true")
+	MakeDownloadClientRequest("delete?hashes=" + download.Hash + "&deleteFiles=true")
+}
+
+func (dc DownloadCollection) Len() int {
+	return len(dc.Downloads)
+}
+
+func (dc DownloadCollection) Less(i, j int) bool {
+	if config.SortInvertOrder {
+		return dc.Downloads[i].GetFloat(config.SortField) > dc.Downloads[j].GetFloat(config.SortField)
+	} else {
+		return dc.Downloads[i].GetFloat(config.SortField) < dc.Downloads[j].GetFloat(config.SortField)
+	}
+}
+
+func (dc DownloadCollection) Swap(i, j int) {
+	temp := dc.Downloads[i]
+	dc.Downloads[i] = dc.Downloads[j]
+	dc.Downloads[j] = temp
+}
+
+func (dc *DownloadCollection) Add(download Download) {
+	dc.Downloads = append(dc.Downloads, download)
+}
+
+func (dc *DownloadCollection) Union(addedDc DownloadCollection) {
+	dc.Downloads = append(dc.Downloads, addedDc.Downloads...)
 }
 
 func (download Download) Recheck() {
-	MakeDownloadClientRequest("recheck?hashes=" + download.hash)
+	MakeDownloadClientRequest("recheck?hashes=" + download.Hash)
 }
 
 func (download Download) Reannounce() {
-	MakeDownloadClientRequest("reannounce?hashes=" + download.hash)
+	MakeDownloadClientRequest("reannounce?hashes=" + download.Hash)
 }
 
 func (download Download) Resume() {
-	MakeDownloadClientRequest("resume?hashes=" + download.hash)
+	MakeDownloadClientRequest("resume?hashes=" + download.Hash)
 }
 
 func (download Download) Pause() {
-	MakeDownloadClientRequest("pause?hashes=" + download.hash)
+	MakeDownloadClientRequest("pause?hashes=" + download.Hash)
 }
 
 func (d Download) GetFloat(field string) float64 {
-	if d.raw[field] == nil {
+	if d.Raw[field] == nil {
 		panic("Problem when trying to get field: " + field)
 	}
-	return d.raw[field].(float64)
+	return d.Raw[field].(float64)
 }
 
 func MakeDownloadClientRequest(request string) {
-	if m_config.DoNotChangeDownloadClient {
-		fmt.Println("Skiping get: " + m_downloadClientUrl + request)
+	if config.DoNotChangeDownloadClient {
+		fmt.Println("Skiping get: " + downloadClientUrlTorrent + request)
 		return
 	}
-	http.Get(m_downloadClientUrl + request)
+	http.Get(downloadClientUrlTorrent + request)
 }
 
 func GetRootDownloadPath() string {
-	torrentClientUrl := m_downloadClientAPIUrl + "app/defaultSavePath"
+	torrentClientUrl := downloadClientUrl + "app/defaultSavePath"
 	resp, err := http.Get(torrentClientUrl)
 
 	body, err := ioutil.ReadAll(resp.Body)
@@ -295,8 +320,8 @@ func GetRootDownloadPath() string {
 	return string(body)
 }
 
-func GetDownloadList() []Download {
-	torrentClientUrl := m_downloadClientUrl + "info"
+func GetDownloadList() DownloadCollection {
+	torrentClientUrl := downloadClientUrlTorrent + "info"
 	resp, err := http.Get(torrentClientUrl)
 
 	body, err := ioutil.ReadAll(resp.Body)
@@ -326,32 +351,35 @@ func GetDownloadList() []Download {
 		}
 
 		newDowload := Download{
-			raw:         downloadMap,
-			active:      active,
-			category:    downloadMap["category"].(string),
-			contentPath: downloadMap["content_path"].(string),
-			hash:        downloadMap["hash"].(string),
-			name:        downloadMap["name"].(string),
-			tags:        downloadMap["tags"].(string),
-			totalSize:   downloadMap["total_size"].(float64),
+			Raw:         downloadMap,
+			Active:      active,
+			Category:    downloadMap["category"].(string),
+			ContentPath: downloadMap["content_path"].(string),
+			Hash:        downloadMap["hash"].(string),
+			Name:        downloadMap["name"].(string),
+			Tag:         downloadMap["tags"].(string),
+			Size:        downloadMap["total_size"].(float64),
 		}
 		downloads = append(downloads, newDowload)
 	}
 
-	return downloads
+	return DownloadCollection{Downloads: downloads}
 }
 
 type Download struct {
-	raw         map[string]interface{}
-	active      bool
-	category    string
-	contentPath string
-	hash        string
-	name        string
-	tags        string
-	totalSize   float64
+	Active      bool
+	Category    string
+	ContentPath string
+	Hash        string
+	Name        string
+	Raw         map[string]interface{}
+	Size        float64
+	Tag         string
 }
 
+type DownloadCollection struct {
+	Downloads []Download
+}
 type Config struct {
 	AllowByCategory           string
 	AllowByName               string
@@ -367,6 +395,7 @@ type Config struct {
 	PoolSize                  float64
 	RcloneRemote              string
 	RecheckOnResume           bool
+	RemoveOnlyWhenPoolIsFull  bool
 	RemoveConditionInclusive  bool
 	RemoveConditions          []Condition
 	SortField                 string
