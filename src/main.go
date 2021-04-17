@@ -54,39 +54,72 @@ func main() {
 	// sort them by priority
 	sort.Stable(allDownloads)
 
-	// get list of soon to be active and soon to be idle downloads, respecting pool size
-	var activePool DownloadCollection
-	var idlePool DownloadCollection
+	// set flags of soon to be active and soon to be idle downloads, respecting pool size
+	var activePoolSize float64
+	var idlePoolSize float64
+	var downloadList DownloadCollection
 
-	var activeDownloadPoolSize float64
 	for _, download := range allDownloads.Downloads {
 
 		newDownloadSize := download.Size
 
 		if download.IsIgnored() {
 			if config.ConsiderIgnoredInPoolSize {
-				activeDownloadPoolSize += newDownloadSize
+				activePoolSize += newDownloadSize
 			}
 
 			continue
 		}
 
 		// enable torrent if fits on active pool, disable if it does not
-		if activeDownloadPoolSize+newDownloadSize < maxPoolSize {
-			activePool.Add(download)
-			activeDownloadPoolSize += newDownloadSize
+		if activePoolSize+newDownloadSize < maxPoolSize {
+			download.ShouldBeActive = true
+			activePoolSize += newDownloadSize
 		} else {
-			idlePool.Add(download)
+			download.ShouldBeActive = false
+			idlePoolSize += newDownloadSize
+		}
+
+		downloadList.Add(download)
+	}
+
+	// handle downloads that should be removed
+	for i, download := range downloadList.Downloads {
+		if config.RemoveOnlyWhenPoolIsFull && activePoolSize+idlePoolSize < maxPoolSize {
+			break
+		}
+
+		if download.CanBeRemoved() {
+			download.Remove()
+
+			// TODO use pointers and avoid doing this
+			downloadList.Downloads[i].Removed = true
+
+			if download.ShouldBeActive {
+				activePoolSize -= download.Size
+			} else {
+				idlePoolSize -= download.Size
+			}
 		}
 	}
 
-	for _, download := range idlePool.Downloads {
-		if download.ShouldBeRemoved() {
-			download.Remove()
+	// rebalance active pool
+	for i, download := range downloadList.Downloads {
+		if download.ShouldBeActive == true || download.Removed {
 			continue
 		}
 
-		if download.Active == false {
+		newDownloadSize := download.Size
+		if activePoolSize+newDownloadSize < maxPoolSize {
+			activePoolSize += newDownloadSize
+			downloadList.Downloads[i].ShouldBeActive = true
+		}
+	}
+
+	// downloads that should be idle
+	for _, download := range downloadList.Downloads {
+
+		if download.Active == false || download.ShouldBeActive == true || download.Removed {
 			continue
 		}
 
@@ -99,13 +132,10 @@ func main() {
 		}
 	}
 
-	for _, download := range activePool.Downloads {
-		if config.RemoveOnlyWhenPoolIsFull == false && download.ShouldBeRemoved() {
-			download.Remove()
-			continue
-		}
+	// downloads that should be active
+	for _, download := range downloadList.Downloads {
 
-		if download.Active == true {
+		if download.Active == true || download.ShouldBeActive == false || download.Removed {
 			continue
 		}
 
@@ -124,7 +154,7 @@ func main() {
 	}
 }
 
-func (download Download) ShouldBeRemoved() bool {
+func (download Download) CanBeRemoved() bool {
 	removeDownload := false
 	for _, condition := range config.RemoveConditions {
 
@@ -273,10 +303,6 @@ func (dc *DownloadCollection) Add(download Download) {
 	dc.Downloads = append(dc.Downloads, download)
 }
 
-func (dc *DownloadCollection) Union(addedDc DownloadCollection) {
-	dc.Downloads = append(dc.Downloads, addedDc.Downloads...)
-}
-
 func (download Download) Recheck() {
 	MakeDownloadClientRequest("recheck?hashes=" + download.Hash)
 }
@@ -367,7 +393,7 @@ func GetDownloadList() DownloadCollection {
 }
 
 type Download struct {
-	Active      bool
+	// data
 	Category    string
 	ContentPath string
 	Hash        string
@@ -375,6 +401,10 @@ type Download struct {
 	Raw         map[string]interface{}
 	Size        float64
 	Tag         string
+	// management flag
+	Active         bool
+	Removed        bool
+	ShouldBeActive bool
 }
 
 type DownloadCollection struct {
