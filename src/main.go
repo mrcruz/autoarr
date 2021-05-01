@@ -384,7 +384,7 @@ func GetDownloadList() DownloadCollection {
 			Hash:        downloadMap["hash"].(string),
 			Name:        downloadMap["name"].(string),
 			Tag:         downloadMap["tags"].(string),
-			Size:        downloadMap["total_size"].(float64),
+			Size:        downloadMap["size"].(float64),
 		}
 		downloads = append(downloads, newDowload)
 	}
