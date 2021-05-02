@@ -287,9 +287,9 @@ func (dc DownloadCollection) Len() int {
 
 func (dc DownloadCollection) Less(i, j int) bool {
 	if config.SortInvertOrder {
-		return dc.Downloads[i].GetFloat(config.SortField) > dc.Downloads[j].GetFloat(config.SortField)
-	} else {
 		return dc.Downloads[i].GetFloat(config.SortField) < dc.Downloads[j].GetFloat(config.SortField)
+	} else {
+		return dc.Downloads[i].GetFloat(config.SortField) > dc.Downloads[j].GetFloat(config.SortField)
 	}
 }
 
