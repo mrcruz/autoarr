@@ -87,7 +87,7 @@ It uses [rclone](https://github.com/rclone/rclone) to move files so you can have
 - [x] Retrieve downloads from idle storage
 - [x] Remove downloads if they meet specific properties
 - [x] Move downloads to idle pool
-- [ ] Remove downloads once they fill up the active pool
+- [x] Remove downloads once they fill up the active pool
 - [ ] More complex priority options
 - [ ] Support other torrent clients
 - [ ] Auto manage idle pool
